@@ -444,7 +444,11 @@ def load_qdrant():
 
 @st.cache_resource
 def load_claude():
-    return anthropic.Anthropic()
+    api_key = (
+        os.getenv("ANTHROPIC_API_KEY")
+        or st.secrets.get("ANTHROPIC_API_KEY", None)
+    )
+    return anthropic.Anthropic(api_key=api_key)
 
 try:
     embedder = load_embedder()
