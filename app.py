@@ -2,7 +2,7 @@ import streamlit as st
 import anthropic
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
-import re, base64
+import re, base64, os
 
 # ── PAGE CONFIG ────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -86,7 +86,9 @@ Recibirás:
 1. Un nuevo perfil de cliente escrito por un trabajador social
 2. Extractos recuperados de informes de casos históricos similares al nuevo caso
 
-Si la entrada NO es un perfil de cliente individual específico — por ejemplo, si es una pregunta de investigación general, una consulta amplia de programa, o una solicitud de resúmenes de varios casos — debes negarte a generar una asesoría de caso. En su lugar, explica claramente que este modo está diseñado solo para casos de clientes individuales y sugiere al usuario que cambie al Modo de Investigación de Programa.
+Un perfil de cliente válido es cualquier entrada que nombre o identifique a un individuo específico y describa su situación o necesidades — aunque sea brevemente. Por ejemplo: "Amara, 28 años, refugiada recién llegada, español limitado, dos hijos pequeños, dificultades para acceder a vivienda y empleo" es un perfil válido y debe procesarse.
+
+Solo rechaza si la entrada NO contiene ningún individuo identificable — por ejemplo, si es una pregunta de investigación general, una consulta amplia de programa, o una solicitud de resúmenes de varios casos. En ese caso, explica claramente que este modo está diseñado solo para casos de clientes individuales y sugiere al usuario que cambie al Modo de Investigación de Programa.
 
 Cuando se envíe un perfil de cliente válido, estructura tu respuesta usando exactamente estas cuatro secciones etiquetadas:
 
@@ -200,7 +202,9 @@ You will receive:
 1. A new client profile written by a social worker
 2. Retrieved excerpts from historical case reports similar to the new case
 
-If the input is NOT a specific individual client profile — for example if it is a general research question, a broad programme query, or a request for summaries across multiple cases — you must refuse to generate a case advisory. Instead, clearly explain that this mode is designed for individual client cases only, and suggest the user switch to Programme Research Mode.
+A valid client profile is any input that names or identifies a specific individual and describes their situation or presenting needs — even briefly. For example: "Amara, age 28, recently arrived refugee, limited language skills, two young children, struggling to access housing and employment" is a valid profile and must be processed.
+
+Only refuse if the input contains NO identifiable individual at all — for example if it is a general research question, a broad programme query, or a request for summaries across multiple cases. In that case, clearly explain that this mode is designed for individual client cases only, and suggest the user switch to Programme Research Mode.
 
 When a valid client profile is submitted, structure your response using exactly these four labelled sections:
 
@@ -314,7 +318,9 @@ Jasoko duzu:
 1. Gizarte-langile batek idatzitako bezero berri baten profila
 2. Kasu berriari antzeko erregistro historikoetatik ateratako zatiak
 
-Sarrera EZ bada banakako bezeroaren profil espezifiko bat — adibidez, ikerketa galdera orokor bat, programa-kontsulta zabal bat, edo hainbat kasuren laburpenen eskaera bada — ezin duzu kasuen aholkularitza sortu. Horren ordez, argi azaldu modu hau banakako bezero-kasuetarako soilik diseinatu dela eta erabiltzaileari Programaren Ikerketa Modura aldatzea gomendatu.
+Bezero-profil baliozkoa da norbanako zehatz bat izendatzen edo identifikatzen duen eta egoera edo beharrak deskribatzen duen edozein sarrera — laburki bada ere. Adibidez: "Amara, 28 urte, errefuxiatu berria, gaztelania mugatua, bi seme-alaba txiki, etxebizitza eta enplegu zerbitzuetara sarbidea izateko zailtasunak" profil baliozkoa da eta prozesatu behar da.
+
+Soilik uka ezazu sarrerak ez badu inolako norbanako identifikagarririk — adibidez, ikerketa galdera orokor bat, programa-kontsulta zabal bat, edo hainbat kasuren laburpenen eskaera bada. Kasu horretan, argi azaldu modu hau banakako bezero-kasuetarako soilik diseinatu dela eta erabiltzaileari Programaren Ikerketa Modura aldatzea gomendatu.
 
 Bezero-profil baliozkoa bidaltzen denean, estruktura ezazu zure erantzuna zehazki lau atal hauetan:
 
@@ -423,9 +429,18 @@ for key, default in [
 def load_embedder():
     return SentenceTransformer("all-MiniLM-L6-v2")
 
+# ── FIXED: reads from Streamlit Secrets (cloud) or .env (local) ───────────────
 @st.cache_resource
 def load_qdrant():
-    return QdrantClient(host="localhost", port=6333)
+    qdrant_url = (
+        os.getenv("QDRANT_URL")
+        or st.secrets.get("QDRANT_URL", "http://localhost:6333")
+    )
+    qdrant_key = (
+        os.getenv("QDRANT_API_KEY")
+        or st.secrets.get("QDRANT_API_KEY", None)
+    )
+    return QdrantClient(url=qdrant_url, api_key=qdrant_key)
 
 @st.cache_resource
 def load_claude():
@@ -481,7 +496,6 @@ def extract_section(text, start_key, all_keys):
 
 # ── SIDEBAR ────────────────────────────────────────────────────────────────────
 with st.sidebar:
-    # Language selector
     st.markdown("**🌐 Language / Idioma / Hizkuntza**")
     lang_col1, lang_col2, lang_col3 = st.columns(3)
     with lang_col1:
@@ -731,14 +745,28 @@ if st.session_state.result_ready:
                 <div class="programme-body">{md_to_html(st.session_state.advisory)}</div>
             </div>""", unsafe_allow_html=True)
 
-    st.markdown("<br>", unsafe_allow_html=True)
-    dl_label = T["download_case"] if app_mode == "Case Advisory" else T["download_prog"]
-    dl_file  = T["file_case"]     if app_mode == "Case Advisory" else T["file_prog"]
+    # ── DOWNLOAD ───────────────────────────────────────────────────────────────
     dl_header = T["download_header_case"] if app_mode == "Case Advisory" else T["download_header_prog"]
+    dl_label  = T["download_input_label"]
+    dl_brief  = T["download_brief_label"]
+    dl_btn    = T["download_case"] if app_mode == "Case Advisory" else T["download_prog"]
+    dl_file   = T["file_case"] if app_mode == "Case Advisory" else T["file_prog"]
+
+    download_content = f"""{dl_header}
+{'='*60}
+
+{dl_label}:
+{st.session_state.client_case_snapshot}
+
+{'='*60}
+
+{dl_brief}:
+{st.session_state.advisory}
+"""
     st.download_button(
-        label=dl_label,
-        data=f"{dl_header}\n{'='*50}\n\n{T['download_input_label']}:\n{st.session_state.client_case_snapshot}\n\n{'='*50}\n\n{T['download_brief_label']}:\n{st.session_state.advisory}",
+        label=dl_btn,
+        data=download_content.encode("utf-8"),
         file_name=dl_file,
         mime="text/plain",
-        use_container_width=True
+        use_container_width=True,
     )
